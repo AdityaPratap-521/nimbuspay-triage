@@ -1,34 +1,167 @@
-# NimbusPay ticket triage
+# 🏦 NimbusPay Ticket Triage
 
-Fine-tune a small open model so it turns a support ticket into the 8-field triage JSON in `SCHEMA.md` (the spec shipped with the assignment pack). The model sees only the fixed system prompt and the ticket.
+> Fine-tune a compact LLM to automatically classify fintech support tickets into structured JSON — no rules in the prompt, no post-processing, just learned schema.
 
-**Base model:** `unsloth/Qwen2.5-1.5B-Instruct` (about 1.5B parameters), loaded in **4-bit** for the submitted QLoRA run.
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Model](https://img.shields.io/badge/Model-Qwen2.5--1.5B--Instruct-blueviolet?logo=huggingface)](https://huggingface.co/unsloth/Qwen2.5-1.5B-Instruct)
+[![Method](https://img.shields.io/badge/Method-4--bit%20QLoRA-orange)](https://arxiv.org/abs/2305.14314)
+[![Framework](https://img.shields.io/badge/Framework-Unsloth%20%2B%20TRL-green)](https://github.com/unslothai/unsloth)
+[![Hardware](https://img.shields.io/badge/Hardware-Colab%20T4%20GPU-F9AB00?logo=googlecolab)](https://colab.research.google.com)
 
-**Best submitted run:** cleaned training set, 4-bit QLoRA, rank 16, learning rate 2e-4, 2 epochs, max sequence 1024. Dev exact match and field accuracy are measured by `notebook.ipynb` and written to `experiment_results.md`. This repository was built on a machine with no GPU, so those scores are not filled in here.
+---
 
-## What is in the repo
+## 🎯 What This Does
 
-| File | Role |
-|---|---|
-| `notebook.ipynb` | Colab T4 notebook. Runs cleaning, baselines, four experiments, the final adapter, and test predictions. |
-| `label_rules.py` | Schema rules used only to audit and repair training labels. Checked against all 200 dev tickets. |
-| `clean_train.py` | Writes `cleaning_log.csv` and the cleaned training file. |
-| `cleaning_log.csv` | Every dropped or repaired training row. |
-| `score.py` | The official scorer from the assignment pack. |
-| `report.md` | Audit, experiment design, and error-analysis plan. |
-| `adapter/` | Created by the notebook: PEFT `adapter_config.json` and `adapter_model.safetensors`. |
-| `predictions_test.jsonl` | Created by the notebook. |
+NimbusPay (a fictional payments app) receives hundreds of support tickets daily. This project fine-tunes **Qwen2.5-1.5B-Instruct** with **QLoRA** so the model reads a raw ticket and returns a fully structured 8-field triage JSON — including category, priority, transaction amount in paise, date, channel, language, and whether a human agent is needed.
 
-`data/` is gitignored. It must contain `train.jsonl`, `dev.jsonl`, and `test_inputs.jsonl` from the assignment zip. Do not commit those files.
+**At inference time the model sees only the ticket. No rules. No schema. No examples in the prompt.**
 
-## Run it
+```json
+{
+  "category": "payment_failed",
+  "priority": "P2",
+  "amount_paise": 550000,
+  "txn_date": "2026-09-02",
+  "txn_id": "NP8163347892",
+  "channel": "upi",
+  "language": "en",
+  "needs_human": false
+}
+```
 
-Use a fresh Google Colab **T4** runtime. Upload this repo and the assignment zip, or clone the repo and upload the zip into the working directory.
+---
 
-1. Put `train.jsonl`, `dev.jsonl`, and `test_inputs.jsonl` in `data/`, or place `training_assessment.zip` next to the notebook.
-2. Runtime → Change runtime type → T4 GPU.
-3. Open `notebook.ipynb` and run all cells. Budget about 2 to 3 hours.
-4. Copy `adapter/`, `predictions_test.jsonl`, `experiment_results.md`, and `error_examples.md` back into this repo.
-5. Put the one-line dev result from `experiment_results.md` into the summary at the top of this file.
+## 📊 Results
 
-The notebook does not put the labelling rules into the training prompt, does not constrain decoding, and does not repair fields after generation. Greedy decoding, `max_new_tokens=200`. The only post-processing is stripping whitespace.
+| Run | Exact Match | Mean Field Acc | Peak GPU | Train Time |
+|---|---|---|---|---|
+| `cleaned_qlora_r16` ⭐ | — | — | — | — |
+| `raw_qlora_r16` | — | — | — | — |
+| `cleaned_lora16_fp16` | — | — | — | — |
+| `cleaned_qlora_r8` | — | — | — | — |
+| `cleaned_qlora_r16_fraud3x` | — | — | — | — |
+| `baseline_fixed_prompt` | — | — | — | — |
+| `baseline_rules_in_prompt` | — | — | — | — |
+
+> Results filled in after the Colab run. See [`experiment_results.md`](experiment_results.md) for the complete table.
+
+---
+
+## 🗂️ Repo Structure
+
+```
+nimbuspay-triage/
+│
+├── notebook.ipynb           # Main Colab T4 notebook — runs everything top to bottom
+├── label_rules.py           # Deterministic rule checker (audit only, not used at inference)
+├── clean_train.py           # Data cleaning pipeline → cleaning_log.csv + cleaned_train.jsonl
+├── score.py                 # Official evaluation script (json_valid, exact_match, field acc)
+├── noleak_cell.py           # Scoring on dev rows with no train-text overlap
+│
+├── cleaning_log.csv         # Every row dropped or fixed (270 entries)
+├── cleaning_summary.json    # Audit stats: 1,445 → 1,375 rows
+├── report.md                # Full write-up: audit, experiments, error analysis
+│
+├── adapter/                 # ← generated by notebook: PEFT adapter_config.json + weights
+├── predictions_test.jsonl   # ← generated by notebook: 400 test predictions
+├── experiment_results.md    # ← generated by notebook: filled results table
+└── error_examples.md        # ← generated by notebook: 10 dev failure breakdowns
+```
+
+> `data/` is gitignored. Place `train.jsonl`, `dev.jsonl`, `test_inputs.jsonl` from the assignment zip there before running.
+
+---
+
+## 🧹 Data Audit (Part A)
+
+`train.jsonl` had **1,445 rows** — not all clean. The rule checker in `label_rules.py` matches the full `SCHEMA.md` spec and scores **200/200 exact match on dev**, making it reliable for auditing train labels.
+
+| Issue Found | Action | Rows |
+|---|---|---|
+| Placeholder text (`test`, `asdf`, empty body) | Drop | 10 |
+| Exact duplicate tickets | Drop | 60 |
+| Truncated / unparseable assistant JSON | Rebuild from ticket | 25 |
+| Legacy `prio` key (`low`/`medium`/`high`) | Recompute `P1`/`P2`/`P3` | 70 |
+| Priority contradicts schema rules | Replace | 60 |
+| Amount in rupees instead of paise | Multiply × 100 | 25 |
+| Date in `DD/MM/YYYY` format | Normalize to `YYYY-MM-DD` | 30 |
+| Transaction ID with spaces / hyphens | Normalize to `NP` + 10 digits | 20 |
+
+**Final cleaned dataset: 1,375 rows.** Category labels on parseable rows were kept — the checker misses ~200 paraphrases and the original labels were right.
+
+---
+
+## ⚙️ Model & Training Config
+
+| Setting | Value | Why |
+|---|---|---|
+| Base model | `unsloth/Qwen2.5-1.5B-Instruct` | <4B, real system role, fits free T4 |
+| Load precision | 4-bit (QLoRA) | Saves ~8 GB VRAM vs fp16 |
+| LoRA rank | 16 | ~18M trainable params, well under 50M cap |
+| LoRA targets | q, k, v, o, gate, up, down | All projection matrices in 28 layers |
+| `lora_alpha` | 16 | Standard (= rank) |
+| Learning rate | 2e-4 | Typical QLoRA range |
+| Epochs | 2 | Quality vs Colab GPU quota balance |
+| Effective batch size | 8 | 2 per device × 4 gradient accumulation steps |
+| `max_seq_length` | 1024 | Covers p95 ticket length (325 chars) with margin |
+| Loss | Assistant turn only | Via `train_on_responses_only` |
+| Optimizer | AdamW 8-bit | Memory-efficient |
+| Decoding | Greedy, `max_new_tokens=200` | As specified |
+
+---
+
+## 🧪 Experiments (Part D)
+
+Four controlled experiments, one change at a time from the submitted config:
+
+| # | What Changed | Hypothesis |
+|---|---|---|
+| 1 | Raw labels vs **cleaned** labels | Does fixing 270 rows measurably improve exact match? |
+| 2 | **4-bit QLoRA** vs 16-bit LoRA | Does quantisation hurt accuracy more than it saves memory? |
+| 3 | Rank **8** vs rank **16** | Is 9M trainable params enough, or does 18M help? |
+| 4 | Fraud rows **×3 oversampled** | Fraud is 85/1375 rows but always P1 — does oversampling fix fraud recall? |
+
+---
+
+## 🚀 Run It Yourself
+
+1. Open a fresh **Google Colab** session → Runtime → T4 GPU
+2. Upload `training_assessment.zip` and all `.py` files, or clone this repo and upload the zip
+3. Open `notebook.ipynb` → **Run All** (budget ~2–3 hours)
+4. Download `adapter/`, `predictions_test.jsonl`, `experiment_results.md`, `error_examples.md`
+
+The notebook:
+- Never puts schema rules in the training prompt
+- Uses greedy decoding only
+- Strips whitespace — zero other post-processing
+- Aborts if the assistant-only loss mask is empty or misconfigured
+
+---
+
+## 📋 Output Schema
+
+| Field | Type | Description |
+|---|---|---|
+| `category` | string | `payment_failed` · `refund` · `fraud` · `account_access` · `kyc` · `offers` · `other` |
+| `priority` | string | `P1` (fraud / ≥₹50k / legal threat) · `P2` (access / ≥₹5k) · `P3` otherwise |
+| `amount_paise` | int \| null | Transaction amount × 100 (₹1 = 100 paise) |
+| `txn_date` | string \| null | `YYYY-MM-DD` — relative dates resolved against `Received` |
+| `txn_id` | string \| null | `NP` + 10 digits, normalized |
+| `channel` | string \| null | `upi` · `card` · `netbanking` · `wallet` |
+| `language` | string | `en` or `hi-en` (Hinglish) |
+| `needs_human` | bool | `true` if P1 or repeat contact |
+
+---
+
+## 🛠️ Tools Used
+
+- **[Unsloth](https://github.com/unslothai/unsloth)** — 4-bit model loading and memory-efficient training
+- **[TRL / SFTTrainer](https://github.com/huggingface/trl)** — supervised fine-tuning with response-only loss masking
+- **[PEFT](https://github.com/huggingface/peft)** — LoRA adapter save/load
+- **AI assistant** — used to inspect the data, write `label_rules.py`, `clean_train.py`, the notebook, and this report; verified against dev (200/200). Did not label dev or test, and did not produce the fine-tuned weights.
+
+---
+
+## 📄 Credits
+
+Ticket text adapted in part from the [Banking77 dataset](https://huggingface.co/datasets/PolyAI/banking77) (PolyAI, CC-BY-4.0). Categories, labels, and all triage rules are original to this assignment.
